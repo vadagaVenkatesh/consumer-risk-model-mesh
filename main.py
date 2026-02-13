@@ -288,6 +288,5 @@ def main():
         logger.info(f"Portfolio results saved to {output_path}")
         print(results.describe())
 
-
 if __name__ == '__main__':
     main()
