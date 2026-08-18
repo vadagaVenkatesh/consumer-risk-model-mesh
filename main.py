@@ -13,8 +13,8 @@ import argparse
 import json
 
 # Import agents
-from agents.macro_agent import MacroAgent, MacroConfig
-from agents.sentiment_agent import SentimentAgent, SentimentConfig
+from agents.macro_agent import MacroAgent
+from agents.sentiment_agent import SentimentAgent
 from agents.structure_agent import StructureAgent
 
 # Import models
@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RiskMeshConfig:
     """Configuration for Risk Model Mesh"""
-    macro_config: MacroConfig
-    sentiment_config: SentimentConfig
+    macro_config: Optional[Dict] = None
+    sentiment_config: Optional[Dict] = None
     lstm_config: LSTMConfig
     gnn_config: GNNConfig
     survival_config: SurvivalConfig
@@ -49,7 +49,7 @@ class RiskModelMesh:
         
         # Initialize agents (Layer 1: Data Processing)
         self.macro_agent = MacroAgent(config.macro_config)
-        self.sentiment_agent = SentimentAgent(config.sentiment_config)
+        self.sentiment_agent = SentimentAgent()
         self.structure_agent = StructureAgent()
         
         # Initialize models (Layer 2: Risk Quantification)
@@ -229,8 +229,6 @@ def main():
     
     # Initialize configuration
     config = RiskMeshConfig(
-        macro_config=MacroConfig(),
-        sentiment_config=SentimentConfig(),
         lstm_config=LSTMConfig(),
         gnn_config=GNNConfig(),
         survival_config=SurvivalConfig()
