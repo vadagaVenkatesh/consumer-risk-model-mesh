@@ -36,42 +36,75 @@ class GNNConfig:
 
 
 class GraphAttentionLayer(layers.Layer):
-    """Graph Attention Layer for message passing"""
-    
-    def __init__(self, units: int, num_heads: int = 4, dropout: float = 0.3, **kwargs):
+    """Graph attention layer (Velickovic et al., 2018) with multi-head averaging.
+
+    Attention coefficients are computed from the transformed node features and
+    masked by the adjacency matrix, so a node only attends to its neighbours.
+    Message passing is therefore genuinely a function of the graph: change an
+    edge and the output changes.
+    """
+
+    def __init__(self, units: int, num_heads: int = 4, dropout: float = 0.3,
+                 negative_slope: float = 0.2, **kwargs):
         super().__init__(**kwargs)
         self.units = units
         self.num_heads = num_heads
         self.dropout = dropout
-        
+        self.negative_slope = negative_slope
+
     def build(self, input_shape):
+        feat_dim = input_shape[0][-1]
         self.kernel = self.add_weight(
-            'kernel',
-            shape=(input_shape[0][-1], self.units * self.num_heads),
-            initializer='glorot_uniform'
+            name='kernel',
+            shape=(feat_dim, self.units * self.num_heads),
+            initializer='glorot_uniform',
+            trainable=True,
         )
-        self.attention_kernel = self.add_weight(
-            'attention_kernel',
-            shape=(2 * self.units, self.num_heads),
-            initializer='glorot_uniform'
+        # Split form of the GAT attention vector a: one half scores the source
+        # node, the other the destination. Keeping them separate lets the
+        # pairwise scores be built by broadcasting rather than by materialising
+        # an N x N concatenation.
+        self.att_src = self.add_weight(
+            name='att_src', shape=(self.units, self.num_heads),
+            initializer='glorot_uniform', trainable=True,
         )
+        self.att_dst = self.add_weight(
+            name='att_dst', shape=(self.units, self.num_heads),
+            initializer='glorot_uniform', trainable=True,
+        )
+        self.drop = layers.Dropout(self.dropout)
         super().build(input_shape)
-    
-    def call(self, inputs):
-        node_features, adjacency = inputs
-        node_features_transformed = tf.matmul(node_features, self.kernel)
-        node_features_transformed = tf.reshape(
-            node_features_transformed,
-            (-1, tf.shape(node_features)[1], self.num_heads, self.units)
-        )
-        attention_scores = self._compute_attention(node_features_transformed, adjacency)
-        output = tf.reduce_mean(node_features_transformed * attention_scores, axis=2)
-        return output
-    
-    def _compute_attention(self, features, adjacency):
-        attention = tf.nn.softmax(tf.random.normal(tf.shape(features)), axis=1)
-        attention = tf.expand_dims(attention, axis=-1)
-        return attention
+
+    def call(self, inputs, training=None):
+        node_features, adjacency = inputs                      # (B,N,F), (B,N,N)
+
+        wh = tf.matmul(node_features, self.kernel)             # (B,N,H*U)
+        wh = tf.reshape(wh, (-1, tf.shape(node_features)[1],
+                             self.num_heads, self.units))      # (B,N,H,U)
+
+        e_src = tf.einsum('bnhu,uh->bnh', wh, self.att_src)    # (B,N,H)
+        e_dst = tf.einsum('bnhu,uh->bnh', wh, self.att_dst)    # (B,N,H)
+        e = e_src[:, :, tf.newaxis, :] + e_dst[:, tf.newaxis, :, :]   # (B,N,N,H)
+        e = tf.nn.leaky_relu(e, alpha=self.negative_slope)
+
+        # Mask non-edges before the softmax so they receive exactly zero weight.
+        mask = tf.expand_dims(adjacency, axis=-1)              # (B,N,N,1)
+        e = tf.where(mask > 0, e, tf.fill(tf.shape(e), tf.constant(-1e9, e.dtype)))
+
+        alpha = tf.nn.softmax(e, axis=2)                       # over neighbours j
+        alpha = self.drop(alpha, training=training)
+
+        out = tf.einsum('bijh,bjhu->bihu', alpha, wh)          # (B,N,H,U)
+        return tf.reduce_mean(out, axis=2)                     # average heads -> (B,N,U)
+
+    def compute_output_shape(self, input_shape):
+        return input_shape[0][:-1] + (self.units,)
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update(units=self.units, num_heads=self.num_heads,
+                   dropout=self.dropout, negative_slope=self.negative_slope)
+        return cfg
 
 
 class ContagionGNN:
